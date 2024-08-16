@@ -1,91 +1,38 @@
-mod account;
-mod accounts;
-mod config;
-mod erc4337;
-mod execution;
-mod types;
-use crate::account::{BaseAccount, SmartAccount};
-use crate::accounts::safe::{Safe7579Helper, Safe7579HelperImpl};
-// use crate::accounts::umsa::{AccountEnvironment, AccountEnvironmentHelper};
-use crate::config::{parse_config, Config};
-use crate::erc4337::{Execution, PackedUserOperation};
-use crate::execution::ExecutionHelper;
-use alloy::network::EthereumWallet;
-use alloy::primitives::{address, b256, Bytes, bytes, U256};
-use alloy::signers::local::PrivateKeySigner;
-use alloy::transports::http::reqwest::Url;
-use alloy::{node_bindings::Anvil, providers::ProviderBuilder};
-use clap::Parser;
-use std::error::Error as StdError;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::{fs, str::FromStr};
+pub mod trace;
 
-#[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
-struct Args {
-    /// Path to the JSON input file
-    #[arg(short, long)]
-    config: PathBuf,
-    #[arg(short, long)]
-    private_key: String,
-}
+use trace::*;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn StdError>> {
-    let args = Args::parse();
-    let config = parse_config(args.config).unwrap();
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize the EVM environment
+    let mut evm = Evm::new(
+        None,
+        "https://eth-mainnet.g.alchemy.com/v2/alVqJQCHT4wtrXuZQehBZaxd9MiFYgGk".to_string(), // Fork URL
+        Some(20534500), // Block number
+        1_000_000, // Gas limit
+        None // Etherscan key, if needed
+    ).await;
 
-    run(config, args.private_key).await
-}
+    // Set up a transaction
+    let request = CallRawRequest {
+        from: "0x3fC91A3afd70395Cd496C647d5a6CC9D4B2b7FAD".parse()?,
+        to: "0xdAC17F958D2ee523a2206206994597C13D831ec7".parse()?,
+        value: None,
+        data: Some("0xa9059cbb0000000000000000000000003fc91a3afd70395cd496c647d5a6cc9d4b2b7fad".parse()?),
+        access_list: None,
+        format_trace: true, // Request trace formatting
+    };
 
-async fn run(config: Config, priv_key: String) -> Result<(), Box<dyn StdError>> {
-    // let signer = PrivateKeySigner::from_str(&priv_key)?;
-    // let wallet = EthereumWallet::from(signer);
-    // let url = Url::parse("http://localhost:8545");
+    // Execute the transaction and get the result
+    let result = evm.call_raw(request).await?;
 
-    let anvil = Anvil::new().fork("https://sepolia.drpc.org").try_spawn()?;
-
-    // Create a provider.
-    let rpc_url = anvil.endpoint().parse()?;
-    let provider = ProviderBuilder::new().on_http(rpc_url);
-    let provider_arc = Arc::new(provider);
-
-    println!("Hello LazyAccount");
-
-    let account = SmartAccount::new().with_provider(provider_arc.clone());
-
-
-    let (init_code, account_address) = <Safe7579HelperImpl as Safe7579Helper>::make_account(
-        provider_arc.clone(),
-        config.general.account_salt,
-        config.general.owners,
-        config.general.validator_modules.clone(),
-    )
-    .await?;
-
-    if let Some(_address) = config.general.account_address {
-        if _address != account_address {
-            panic!("Address mismatch");
-        }
+    // Output the result
+    println!("Gas used: {}", result.gas_used);
+    println!("Success: {}", result.success);
+    println!("Logs: {:?}", result.logs);
+    if let Some(trace) = result.formatted_trace {
+        println!("Trace: {}", trace);
     }
-
-
-    let default_validator = config.general.validator_modules[0];
-    let nonce = account.get_nonce(default_validator).await?;
-
-    let execution = account.encode_execution(vec![Execution {
-        target: account_address,
-        value: U256::from(100),
-        callData: Bytes::from(""),
-    }]);
-
-    let userop = PackedUserOperation::new()
-        .with_sender(account_address)
-        .with_nonce(nonce)
-        .with_init_code(init_code)
-        .with_calldata(execution);
-    account.send_user_op(userop).await?;
 
     Ok(())
 }
